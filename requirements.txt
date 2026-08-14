@@ -1,0 +1,11 @@
+tensorflow==2.19.*
+tensorflow-metal==1.2.0; sys_platform == "darwin"
+numpy
+pandas
+pillow
+opencv-python
+scikit-learn
+matplotlib
+fastapi
+uvicorn[standard]
+python-multipart
