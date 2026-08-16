@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photography Composition Analyzer</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='18' fill='%232563eb'/%3E%3Cpath d='M33 0v100M67 0v100M0 33h100M0 67h100' stroke='white' stroke-width='6'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #1a1d21; --muted: #6b7280;
+    --accent: #2563eb; --accent-soft: #dbeafe; --border: #e5e7eb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 20px 60px; }
+  header h1 { font-size: 26px; margin: 0 0 4px; }
+  header p { color: var(--muted); margin: 0 0 28px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  #drop {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 36px 16px;
+    text-align: center; color: var(--muted); cursor: pointer; transition: all .15s;
+  }
+  #drop.hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  #drop strong { color: var(--ink); }
+  #preview-box { position: relative; margin-top: 16px; display: none; }
+  #preview { width: 100%; border-radius: 8px; display: block; }
+  #thirds { position: absolute; inset: 0; pointer-events: none; display: none; }
+  #thirds line { stroke: rgba(255,255,255,.85); stroke-width: 1.2; }
+  .controls { display: flex; align-items: center; gap: 10px; margin-top: 12px; color: var(--muted); font-size: 14px; }
+  .results h2 { font-size: 17px; margin: 0 0 4px; }
+  #status { color: var(--muted); font-size: 14px; min-height: 20px; }
+  .row { margin: 10px 0; }
+  .row .top { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 3px; }
+  .row .name { text-transform: capitalize; }
+  .row.predicted .name { font-weight: 600; color: var(--accent); }
+  .bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 4px; background: #cbd5e1; transition: width .4s; }
+  .row.predicted .bar i { background: var(--accent); }
+  .note { margin-top: 20px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--border); padding-top: 12px; }
+  .empty { color: var(--muted); font-size: 14px; padding: 24px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Photography Composition Analyzer</h1>
+    <p>Upload a photograph to detect composition techniques such as rule of thirds, symmetry, diagonals, and vanishing points.</p>
+  </header>
+  <div class="grid">
+    <div class="card">
+      <div id="drop">
+        <strong>Drop a photo here</strong> or click to choose<br>
+        <span style="font-size:13px">JPG or PNG, up to 20 MB</span>
+      </div>
+      <input id="file" type="file" accept="image/jpeg,image/png" hidden>
+      <div id="preview-box">
+        <img id="preview" alt="Uploaded photo preview">
+        <svg id="thirds" viewBox="0 0 300 200" preserveAspectRatio="none">
+          <line x1="100" y1="0" x2="100" y2="200"/><line x1="200" y1="0" x2="200" y2="200"/>
+          <line x1="0" y1="66.7" x2="300" y2="66.7"/><line x1="0" y1="133.3" x2="300" y2="133.3"/>
+        </svg>
+      </div>
+      <div class="controls" id="overlay-control" style="display:none">
+        <label><input id="grid-toggle" type="checkbox"> Show rule-of-thirds grid</label>
+      </div>
+    </div>
+    <div class="card results">
+      <h2>Detected techniques</h2>
+      <div id="status"></div>
+      <div id="bars"><div class="empty">Results appear here after you upload a photo.</div></div>
+      <div class="note">
+        Composition labels are subjective. Predictions reflect consensus of CADB
+        dataset annotators and may miss or over-detect techniques.
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  const drop = document.getElementById('drop');
+  const fileInput = document.getElementById('file');
+  const previewBox = document.getElementById('preview-box');
+  const preview = document.getElementById('preview');
+  const thirds = document.getElementById('thirds');
+  const gridToggle = document.getElementById('grid-toggle');
+  const overlayControl = document.getElementById('overlay-control');
+  const statusEl = document.getElementById('status');
+  const bars = document.getElementById('bars');
+
+  drop.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => fileInput.files[0] && analyze(fileInput.files[0]));
+  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.add('hover');
+  }));
+  ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.remove('hover');
+  }));
+  drop.addEventListener('drop', e => {
+    const f = e.dataTransfer.files[0];
+    if (f) analyze(f);
+  });
+  gridToggle.addEventListener('change', () => {
+    thirds.style.display = gridToggle.checked ? 'block' : 'none';
+  });
+
+  async function analyze(file) {
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      statusEl.textContent = 'Please choose a JPG or PNG image.';
+      return;
+    }
+    preview.src = URL.createObjectURL(file);
+    previewBox.style.display = 'block';
+    overlayControl.style.display = 'flex';
+    thirds.style.display = gridToggle.checked ? 'block' : 'none';
+    statusEl.textContent = 'Analyzing…';
+    bars.innerHTML = '';
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const res = await fetch('/api/predict', { method: 'POST', body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Server error (${res.status})`);
+      }
+      render(await res.json());
+    } catch (err) {
+      statusEl.textContent = err.message;
+    }
+  }
+
+  function render(data) {
+    const predicted = data.predictions.filter(p => p.predicted);
+    statusEl.textContent = predicted.length
+      ? `Detected: ${predicted.map(p => pretty(p.label)).join(', ')}`
+      : 'No technique cleared its confidence threshold.';
+    bars.innerHTML = '';
+    for (const p of data.predictions) {
+      const row = document.createElement('div');
+      row.className = 'row' + (p.predicted ? ' predicted' : '');
+      row.innerHTML = `
+        <div class="top">
+          <span class="name">${pretty(p.label)}</span>
+          <span>${(p.probability * 100).toFixed(1)}%</span>
+        </div>
+        <div class="bar"><i style="width:0%"></i></div>`;
+      bars.appendChild(row);
+      requestAnimationFrame(() =>
+        row.querySelector('i').style.width = (p.probability * 100) + '%');
+    }
+  }
+
+  const pretty = l => l.replaceAll('_', ' ');
+</script>
+</body>
+</html>
