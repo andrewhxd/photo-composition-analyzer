@@ -31,7 +31,13 @@
   #preview { width: 100%; border-radius: 8px; display: block; }
   #thirds { position: absolute; inset: 0; pointer-events: none; display: none; }
   #thirds line { stroke: rgba(255,255,255,.85); stroke-width: 1.2; }
-  .controls { display: flex; align-items: center; gap: 10px; margin-top: 12px; color: var(--muted); font-size: 14px; }
+  .controls { display: flex; align-items: center; gap: 10px; margin-top: 12px; color: var(--muted); font-size: 14px; flex-wrap: wrap; }
+  .controls select, .controls button {
+    font: inherit; padding: 5px 10px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--card); color: var(--ink); cursor: pointer;
+  }
+  .controls button { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .controls button:disabled { opacity: .6; cursor: default; }
   .results h2 { font-size: 17px; margin: 0 0 4px; }
   #status { color: var(--muted); font-size: 14px; min-height: 20px; }
   .row { margin: 10px 0; }
@@ -68,6 +74,11 @@
       <div class="controls" id="overlay-control" style="display:none">
         <label><input id="grid-toggle" type="checkbox"> Show rule-of-thirds grid</label>
       </div>
+      <div class="controls" id="explain-control" style="display:none">
+        Explain prediction:
+        <select id="cam-label"></select>
+        <button id="cam-btn" type="button">Show Grad-CAM</button>
+      </div>
     </div>
     <div class="card results">
       <h2>Detected techniques</h2>
@@ -90,6 +101,13 @@
   const overlayControl = document.getElementById('overlay-control');
   const statusEl = document.getElementById('status');
   const bars = document.getElementById('bars');
+  const explainControl = document.getElementById('explain-control');
+  const camLabel = document.getElementById('cam-label');
+  const camBtn = document.getElementById('cam-btn');
+  let currentFile = null;
+  let originalUrl = null;
+  let camUrl = null;
+  let camShown = false;
 
   drop.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => fileInput.files[0] && analyze(fileInput.files[0]));
@@ -112,7 +130,14 @@
       statusEl.textContent = 'Please choose a JPG or PNG image.';
       return;
     }
-    preview.src = URL.createObjectURL(file);
+    currentFile = file;
+    if (originalUrl) URL.revokeObjectURL(originalUrl);
+    if (camUrl) { URL.revokeObjectURL(camUrl); camUrl = null; }
+    camShown = false;
+    camBtn.textContent = 'Show Grad-CAM';
+    explainControl.style.display = 'none';
+    originalUrl = URL.createObjectURL(file);
+    preview.src = originalUrl;
     previewBox.style.display = 'block';
     overlayControl.style.display = 'flex';
     thirds.style.display = gridToggle.checked ? 'block' : 'none';
@@ -151,7 +176,51 @@
       requestAnimationFrame(() =>
         row.querySelector('i').style.width = (p.probability * 100) + '%');
     }
+    camLabel.innerHTML = '';
+    for (const p of data.predictions) {
+      const opt = document.createElement('option');
+      opt.value = p.label;
+      opt.textContent = `${pretty(p.label)} (${(p.probability * 100).toFixed(0)}%)`;
+      camLabel.appendChild(opt);
+    }
+    explainControl.style.display = 'flex';
   }
+
+  camBtn.addEventListener('click', async () => {
+    if (camShown) {
+      preview.src = originalUrl;
+      camShown = false;
+      camBtn.textContent = 'Show Grad-CAM';
+      return;
+    }
+    if (!currentFile) return;
+    camBtn.disabled = true;
+    camBtn.textContent = 'Computing…';
+    const form = new FormData();
+    form.append('file', currentFile);
+    form.append('label', camLabel.value);
+    try {
+      const res = await fetch('/api/gradcam', { method: 'POST', body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Server error (${res.status})`);
+      }
+      if (camUrl) URL.revokeObjectURL(camUrl);
+      camUrl = URL.createObjectURL(await res.blob());
+      preview.src = camUrl;
+      camShown = true;
+      camBtn.textContent = 'Hide Grad-CAM';
+    } catch (err) {
+      statusEl.textContent = err.message;
+      camBtn.textContent = 'Show Grad-CAM';
+    } finally {
+      camBtn.disabled = false;
+    }
+  });
+
+  camLabel.addEventListener('change', () => {
+    if (camShown) { camShown = false; camBtn.textContent = 'Show Grad-CAM'; preview.src = originalUrl; }
+  });
 
   const pretty = l => l.replaceAll('_', ' ');
 </script>

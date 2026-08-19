@@ -15,12 +15,14 @@ import os
 import sys
 
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, Response
 from PIL import Image, UnidentifiedImageError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.data import LABELS  # noqa: E402
+from src.gradcam import GradCAM  # noqa: E402
 from src.inference import CompositionPredictor  # noqa: E402
 
 MODEL_DIR = os.environ.get("MODEL_DIR", "artifacts")
@@ -29,12 +31,26 @@ APP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 app = FastAPI(title="Photography Composition Analyzer")
 predictor: CompositionPredictor | None = None
+gradcam: GradCAM | None = None
 
 
 @app.on_event("startup")
 def load_model() -> None:
-    global predictor
+    global predictor, gradcam
     predictor = CompositionPredictor(MODEL_DIR)
+    gradcam = GradCAM(model=predictor.model)
+
+
+def _decode_upload(raw: bytes) -> np.ndarray:
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Image larger than 20 MB")
+    try:
+        image = Image.open(io.BytesIO(raw))
+        if image.format not in ("JPEG", "PNG"):
+            raise HTTPException(status_code=415, detail="Only JPG and PNG are supported")
+        return np.asarray(image.convert("RGB"))
+    except UnidentifiedImageError:
+        raise HTTPException(status_code=415, detail="File is not a readable image")
 
 
 @app.get("/")
@@ -51,17 +67,7 @@ def health():
 async def predict(file: UploadFile = File(...)):
     if predictor is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    raw = await file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Image larger than 20 MB")
-    try:
-        image = Image.open(io.BytesIO(raw))
-        if image.format not in ("JPEG", "PNG"):
-            raise HTTPException(status_code=415, detail="Only JPG and PNG are supported")
-        rgb = np.asarray(image.convert("RGB"))
-    except UnidentifiedImageError:
-        raise HTTPException(status_code=415, detail="File is not a readable image")
-
+    rgb = _decode_upload(await file.read())
     results = predictor.predict_array(rgb)
     return {
         "filename": file.filename,
@@ -71,3 +77,18 @@ async def predict(file: UploadFile = File(...)):
             "annotator consensus, not ground truth."
         ),
     }
+
+
+@app.post("/api/gradcam")
+async def explain(file: UploadFile = File(...), label: str = Form(...)):
+    """Grad-CAM overlay (PNG) showing which regions drove one class's score."""
+    if gradcam is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    if label not in LABELS:
+        raise HTTPException(status_code=422, detail=f"Unknown label: {label}")
+    rgb = _decode_upload(await file.read())
+
+    overlay = gradcam.overlay(rgb, label)
+    buf = io.BytesIO()
+    Image.fromarray(overlay).save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png")
