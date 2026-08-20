@@ -99,12 +99,22 @@ class WeightedBinaryCrossentropy(keras.losses.Loss):
         return config
 
 
-def compile_model(model: keras.Model, learning_rate: float, pos_weight=None) -> None:
-    loss = (
-        WeightedBinaryCrossentropy(pos_weight)
-        if pos_weight is not None
-        else keras.losses.BinaryCrossentropy()
-    )
+def compile_model(
+    model: keras.Model,
+    learning_rate: float,
+    pos_weight=None,
+    loss_name: str = "weighted_bce",
+) -> None:
+    if loss_name == "focal":
+        # alpha/gamma follow Lin et al. 2017; class balancing is global here,
+        # unlike the per-class weights of weighted BCE.
+        loss = keras.losses.BinaryFocalCrossentropy(
+            apply_class_balancing=True, alpha=0.25, gamma=2.0
+        )
+    elif pos_weight is not None:
+        loss = WeightedBinaryCrossentropy(pos_weight)
+    else:
+        loss = keras.losses.BinaryCrossentropy()
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate),
         loss=loss,

@@ -43,6 +43,8 @@ def parse_args(argv=None):
     p.add_argument("--finetune-lr", type=float, default=1e-4)
     p.add_argument("--unfreeze-blocks", type=int, default=2,
                    help="EfficientNet blocks to unfreeze in stage 2 (0 skips fine-tuning)")
+    p.add_argument("--loss", choices=["weighted_bce", "focal"], default="weighted_bce",
+                   help="Training loss: per-class weighted BCE or binary focal loss")
     p.add_argument("--no-class-weighting", action="store_true",
                    help="Use plain BCE instead of positive-class-weighted BCE")
     p.add_argument("--max-pos-weight", type=float, default=10.0)
@@ -90,7 +92,7 @@ def main(argv=None):
     print(label_frequencies(splits.train).to_string())
 
     pos_weight = None
-    if not args.no_class_weighting:
+    if not args.no_class_weighting and args.loss == "weighted_bce":
         pos_weight = positive_class_weights(splits.train, args.max_pos_weight)
         print("positive class weights:",
               {label: round(float(w), 2) for label, w in zip(LABELS, pos_weight)})
@@ -116,8 +118,8 @@ def main(argv=None):
 
     histories = []
 
-    print("\n=== Stage 1: train head with frozen backbone ===")
-    compile_model(model, args.head_lr, pos_weight)
+    print(f"\n=== Stage 1: train head with frozen backbone (loss={args.loss}) ===")
+    compile_model(model, args.head_lr, pos_weight, args.loss)
     history = model.fit(train_ds, validation_data=val_ds,
                         epochs=args.head_epochs, callbacks=callbacks)
     histories.append(history.history)
@@ -126,7 +128,7 @@ def main(argv=None):
         print(f"\n=== Stage 2: fine-tune last {args.unfreeze_blocks} blocks ===")
         unfrozen = unfreeze_top_blocks(model, args.unfreeze_blocks)
         print(f"unfroze {unfrozen} layers")
-        compile_model(model, args.finetune_lr, pos_weight)
+        compile_model(model, args.finetune_lr, pos_weight, args.loss)
         history = model.fit(train_ds, validation_data=val_ds,
                             epochs=args.finetune_epochs, callbacks=callbacks)
         histories.append(history.history)
