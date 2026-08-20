@@ -86,25 +86,32 @@ def train(args):
     keras.utils.set_random_seed(args.seed)
     df = load_annotations(args.data_root)
     splits = make_splits(df, args.data_root, seed=args.seed)
-    emb_by_id = _load_embeddings(args.model_dir)
+    emb_by_id = _load_embeddings(args.embeddings_from or args.model_dir)
     x_train, y_train = _split_arrays(splits.train, emb_by_id)
     x_val, y_val = _split_arrays(splits.val, emb_by_id)
 
-    pos_weight = positive_class_weights(splits.train)
+    if args.head == "linear":
+        hidden = []
+    else:
+        hidden = [keras.layers.Dense(512, activation="gelu"), keras.layers.Dropout(0.3)]
     head = keras.Sequential(
-        [
-            keras.Input(shape=(x_train.shape[1],)),
-            keras.layers.Dense(512, activation="gelu"),
-            keras.layers.Dropout(0.3),
-            keras.layers.Dense(len(LABELS), activation="sigmoid"),
-        ],
-        name="dinov2_head",
+        [keras.Input(shape=(x_train.shape[1],))]
+        + hidden
+        + [keras.layers.Dense(len(LABELS), activation="sigmoid")],
+        name=f"dinov2_{args.head}_head",
     )
+    if args.loss == "focal":
+        loss = keras.losses.BinaryFocalCrossentropy(
+            apply_class_balancing=True, alpha=0.25, gamma=2.0
+        )
+    else:
+        loss = WeightedBinaryCrossentropy(positive_class_weights(splits.train))
     head.compile(
         optimizer=keras.optimizers.Adam(1e-3),
-        loss=WeightedBinaryCrossentropy(pos_weight),
+        loss=loss,
         metrics=[keras.metrics.AUC(name="auc_pr", curve="PR", multi_label=True)],
     )
+    os.makedirs(args.model_dir, exist_ok=True)
     head.fit(
         x_train, y_train,
         validation_data=(x_val, y_val),
@@ -132,7 +139,7 @@ def evaluate(args):
     df = load_annotations(args.data_root)
     splits = make_splits(df, args.data_root, seed=args.seed)
     split_df = getattr(splits, args.split)
-    emb_by_id = _load_embeddings(args.model_dir)
+    emb_by_id = _load_embeddings(args.embeddings_from or args.model_dir)
     x, y_true = _split_arrays(split_df, emb_by_id)
     y_true = y_true.astype(int)
 
@@ -168,6 +175,10 @@ def main(argv=None):
     p.add_argument("--data-root", default="data/CADB_Dataset")
     p.add_argument("--model-dir", default=DEFAULT_DIR)
     p.add_argument("--arch", default="dinov2_vits14")
+    p.add_argument("--head", choices=["mlp", "linear"], default="mlp")
+    p.add_argument("--loss", choices=["weighted_bce", "focal"], default="weighted_bce")
+    p.add_argument("--embeddings-from", default=None,
+                   help="Reuse embeddings.npz from another model dir")
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--epochs", type=int, default=60)
     p.add_argument("--split", choices=["train", "val", "test"], default="val")
